@@ -1,0 +1,1372 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <title>Canícula — Análisis Satelital de Suelos y Rotación de Cultivos (NASA)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet" />
+  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    :root {
+      --bg-panel: #efe9dc;
+      --bg-sub: #e3dbc9;
+      --bg-card: #f6f2e8;
+      --border-col: #cbbba0;
+      --ink-main: #241f1b;
+      --ink-muted: #665c52;
+      --accent-terra: #c84b31;
+      --accent-agro: #2d6a4f;
+      --accent-hydro: #1d4ed8;
+    }
+    body.dark-theme {
+      --bg-panel: #181614;
+      --bg-sub: #211e1b;
+      --bg-card: #292521;
+      --border-col: #3d3731;
+      --ink-main: #ede6dc;
+      --ink-muted: #9e9488;
+    }
+    body {
+      background-color: var(--bg-panel);
+      color: var(--ink-main);
+      font-family: 'Inter', -apple-system, sans-serif;
+      overflow: hidden;
+      user-select: none;
+      transition: background-color 0.2s, color 0.2s;
+    }
+    .mono { font-family: 'JetBrains Mono', monospace; }
+    .panel-border { border-color: var(--border-col); }
+    .bg-ivory { background-color: var(--bg-card); }
+    .bg-sand { background-color: var(--bg-sub); }
+    .bg-main { background-color: var(--bg-panel); }
+    .text-main { color: var(--ink-main); }
+    .text-muted { color: var(--ink-muted); }
+    input[type=range] { accent-color: var(--accent-terra); cursor: pointer; }
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-thumb { background: #88837a; border-radius: 3px; }
+    .map-callout {
+      background: rgba(20, 18, 15, 0.92);
+      color: #f6f2e8;
+      border: 1px solid rgba(250, 204, 21, 0.4);
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-size: 10px;
+      font-family: 'JetBrains Mono', monospace;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+      pointer-events: none;
+      white-space: nowrap;
+    }
+  </style>
+</head>
+<body class="h-screen w-screen flex flex-col text-[12px]">
+
+  <!-- 1. BARRA SUPERIOR -->
+  <header class="min-h-[48px] bg-main border-b panel-border px-3 py-1.5 flex flex-wrap items-center justify-between gap-2 z-30 shrink-0">
+    <div class="flex items-center gap-2">
+      <div class="flex items-center gap-1.5">
+        <span class="w-2.5 h-2.5 rounded-sm bg-[#c84b31] inline-block"></span>
+        <span class="font-bold tracking-tight text-[14px] text-main">Canícula</span>
+        <span class="text-[10px] mono text-muted border-l panel-border pl-2 hidden md:inline">NASA GIBS + POWER + SRTM 30m</span>
+      </div>
+
+      <div class="flex items-center bg-ivory border panel-border rounded px-2 py-1">
+        <input id="input-lugar" type="text" placeholder="Buscar localidad o país..."
+               onkeydown="if(event.key==='Enter') buscarLocalidad()"
+               class="bg-transparent text-[11px] text-main w-36 sm:w-44 focus:outline-none" />
+        <button id="btn-buscar" onclick="buscarLocalidad()" class="text-[10px] font-bold uppercase text-[#c84b31] hover:underline ml-1">
+          Ir
+        </button>
+      </div>
+
+      <button id="btn-gps" onclick="usarUbicacionGPS()" title="Usar mi ubicación GPS actual"
+              class="bg-ivory hover:opacity-90 border panel-border px-2 py-1 rounded text-[11px] font-semibold flex items-center gap-1 transition">
+        <span class="w-2 h-2 rounded-full bg-emerald-600 inline-block"></span>
+        <span id="lbl-gps">GPS</span>
+      </button>
+    </div>
+
+    <!-- Fechas, Paso y Variable Satelital / Topográfica -->
+    <div class="flex flex-wrap items-center gap-1.5">
+      <div class="flex items-center gap-1 bg-ivory border panel-border rounded px-2 py-0.5 text-[11px] mono">
+        <input id="fecha-ini" type="date" value="2020-10-15" onchange="ejecutarAnalisis()" class="bg-transparent text-main focus:outline-none" />
+        <span class="text-muted">→</span>
+        <input id="fecha-fin" type="date" value="2020-12-05" onchange="ejecutarAnalisis()" class="bg-transparent text-main focus:outline-none" />
+      </div>
+
+      <select id="select-agrupacion" onchange="ejecutarAnalisis()" class="bg-ivory border panel-border text-main rounded px-2 py-1 text-[11px] font-medium focus:outline-none">
+        <option value="dias" id="opt-dias">Días</option>
+        <option value="semanas" id="opt-semanas">Semanas</option>
+        <option value="meses" id="opt-meses">Meses</option>
+        <option value="anios" id="opt-anios">Años</option>
+      </select>
+
+      <select id="select-variable-mapa" onchange="actualizarSuperficieFisica()" class="bg-[#241f1b] text-[#f6f2e8] rounded px-2.5 py-1 text-[11px] font-medium focus:outline-none">
+        <option value="retencion" id="opt-var-retencion">Variable: Humedad y Retención en Suelo (SMAP L4)</option>
+        <option value="cobertura" id="opt-var-cobertura">Variable: Cobertura Vegetal Fenológica (MODIS NDVI)</option>
+        <option value="erosion" id="opt-var-erosion">Variable: Erosión Hídrica en Laderas (RUSLE %)</option>
+        <option value="temperatura" id="opt-var-temp">Variable: Temperatura Superficial por Altitud (°C)</option>
+        <option value="radiacion" id="opt-var-radiacion">Variable: Radiación Solar Incidente (MJ/m²/d)</option>
+        <option value="lluvia" id="opt-var-lluvia">Variable: Precipitación Diaria (GPM IMERG mm)</option>
+      </select>
+
+      <button id="btn-actualizar" onclick="ejecutarAnalisis()" class="bg-[#c84b31] hover:opacity-90 text-white font-semibold px-2.5 py-1 rounded text-[11px] transition">
+        Actualizar
+      </button>
+    </div>
+
+    <!-- Controles Derechos -->
+    <div class="flex items-center gap-1.5">
+      <select id="select-escala-vista" onchange="cambiarEscalaVista()" class="bg-ivory border panel-border text-main rounded px-2 py-1 text-[11px] font-semibold focus:outline-none">
+        <option value="hibrido_global" id="opt-esc-global">Capa: Satélite Oficial NASA GIBS + Relieve 3D</option>
+        <option value="cuenca_dem" id="opt-esc-dem">Capa: Solo Malla Local de Ladera (SRTM)</option>
+      </select>
+
+      <div class="flex bg-sand border panel-border rounded p-0.5 text-[11px] font-medium">
+        <button id="btn-vista-3d" onclick="cambiarModoVista('3d')" class="px-2 py-0.5 rounded bg-[#c84b31] text-white transition">3D</button>
+        <button id="btn-vista-2d" onclick="cambiarModoVista('2d')" class="px-2 py-0.5 rounded text-main transition">2D</button>
+      </div>
+
+      <button id="btn-idioma" onclick="toggleIdioma()" class="bg-ivory border panel-border px-2 py-1 rounded text-[11px] mono font-bold text-main hover:opacity-80">
+        ES
+      </button>
+
+      <button id="btn-tema" onclick="toggleTemaOscuro()" class="bg-ivory border panel-border px-2 py-1 rounded text-[11px] font-semibold text-main hover:opacity-80">
+        🌙
+      </button>
+
+      <a id="link-auditoria-nasa" href="#" target="_blank"
+         class="bg-[#2d6a4f] hover:opacity-90 text-white px-2 py-1 rounded text-[10px] mono font-semibold">
+        NASA API ↗
+      </a>
+    </div>
+  </header>
+
+  <!-- 2. CINTA DE TELEMETRÍA DE LAS 5 VARIABLES SOLICITADAS -->
+  <section class="min-h-[54px] bg-sand border-b panel-border px-3 py-1 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 items-center shrink-0 z-20">
+    <div class="bg-ivory px-2.5 py-1 rounded border panel-border flex flex-col justify-center">
+      <div class="flex justify-between items-center gap-1">
+        <span id="top-lugar" class="font-bold text-[11px] text-main truncate">Somoto, Madriz</span>
+        <span id="top-fecha-paso" class="mono text-[9px] bg-[#241f1b] text-white px-1.5 rounded shrink-0">--</span>
+      </div>
+      <span id="top-coords" class="mono text-[9px] text-muted">Lat: 13.485 | Lon: -86.582 · Alt: -- m</span>
+    </div>
+
+    <div class="bg-ivory px-2.5 py-1 rounded border panel-border">
+      <div id="lbl-card-1" class="text-[9px] font-bold uppercase text-muted">1. Cobertura Vegetal</div>
+      <div class="flex items-baseline justify-between">
+        <span id="var-cobertura" class="mono font-bold text-[13px] text-[#2d6a4f]">--%</span>
+        <span id="var-ndvi" class="mono text-[10px] text-muted">NDVI: --</span>
+      </div>
+    </div>
+
+    <div class="bg-ivory px-2.5 py-1 rounded border panel-border">
+      <div id="lbl-card-2" class="text-[9px] font-bold uppercase text-muted">2. Tipo de Suelo (USDA)</div>
+      <div class="flex flex-col">
+        <span id="var-suelo-clase" class="font-bold text-[11px] text-main truncate">--</span>
+        <span id="var-suelo-comp" class="mono text-[9px] text-muted">Arc: --% · Are: --% · MO: --%</span>
+      </div>
+    </div>
+
+    <div class="bg-ivory px-2.5 py-1 rounded border panel-border">
+      <div id="lbl-card-3" class="text-[9px] font-bold uppercase text-muted">3. Pendiente Real DEM</div>
+      <div class="flex items-baseline justify-between">
+        <span id="var-pendiente" class="mono font-bold text-[13px] text-[#c84b31]">--%</span>
+        <span id="var-pendiente-grados" class="mono text-[10px] text-muted">--° (Máx: --%)</span>
+      </div>
+    </div>
+
+    <div class="bg-ivory px-2.5 py-1 rounded border panel-border">
+      <div id="lbl-card-4" class="text-[9px] font-bold uppercase text-muted">4. Retención de Suelo</div>
+      <div class="flex items-baseline justify-between">
+        <span id="var-retencion" class="mono font-bold text-[13px] text-[#1d4ed8]">-- mm/m</span>
+        <span id="var-smap-actual" class="mono text-[10px] text-muted">SMAP: --%</span>
+      </div>
+    </div>
+
+    <div class="bg-ivory px-2.5 py-1 rounded border panel-border">
+      <div id="lbl-card-5" class="text-[9px] font-bold uppercase text-muted">5. Radiación y Temperatura</div>
+      <div class="flex items-baseline justify-between">
+        <span id="var-radiacion" class="mono font-bold text-[12px] text-amber-700">-- MJ/m²</span>
+        <span id="var-lluvia-paso" class="mono text-[9px] text-muted">T: --°/--° · Ll: --mm</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3. AREA CENTRAL: MAPA + TIMELINE + PANEL DERECHO -->
+  <div class="flex-1 flex flex-col lg:flex-row overflow-hidden">
+
+    <!-- COLUMNA CENTRAL -->
+    <div class="flex-1 flex flex-col relative overflow-hidden">
+      <div class="flex-1 relative">
+        <div id="map" class="w-full h-full"></div>
+
+        <!-- Leyenda Física Dinámica con Escalas Reales (Abajo a la Izquierda) -->
+        <div class="absolute bottom-3 left-3 bg-[#181614]/92 text-[#f6f2e8] px-3 py-2 rounded border border-white/15 backdrop-blur-sm z-10 space-y-1 mono text-[10px] w-80">
+          <div class="flex items-center justify-between">
+            <span id="leyenda-nombre" class="font-bold text-white">Retención Hídrica (SMAP)</span>
+            <span id="leyenda-valor-actual" class="text-amber-300 font-bold">--</span>
+          </div>
+          <div id="leyenda-gradiente" class="w-full h-2.5 rounded-sm bg-gradient-to-r from-[#dc2626] via-[#eab308] via-[#10b981] to-[#1d4ed8] border border-white/20"></div>
+          <div id="leyenda-marcas" class="flex justify-between text-[9px] text-stone-300">
+            <span id="leyenda-min">15% (Seco)</span>
+            <span id="leyenda-med">55% (Óptimo)</span>
+            <span id="leyenda-max">100% (Saturado)</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- DOCK INFERIOR: TIMELINE CON FECHA PERSISTENTE + 3 GRAFICAS -->
+      <div class="h-52 bg-main border-t panel-border flex flex-col shrink-0 z-20">
+        <div class="h-9 bg-sand border-b panel-border px-3 flex items-center justify-between gap-3">
+          <div class="flex items-center gap-1.5">
+            <span id="lbl-timeline-title" class="text-[10px] font-bold uppercase text-muted">Fecha Activa:</span>
+            <button id="btn-play" onclick="togglePlayTimeline()" class="px-2.5 py-0.5 rounded bg-[#241f1b] text-white font-semibold text-[10px] hover:opacity-90">
+              ▶ Reproducir
+            </button>
+            <button onclick="pasoTimeline(-1)" class="px-1.5 py-0.5 rounded border panel-border bg-ivory text-main text-[10px] mono">◀</button>
+            <button onclick="pasoTimeline(1)" class="px-1.5 py-0.5 rounded border panel-border bg-ivory text-main text-[10px] mono">▶</button>
+            <span id="badge-fecha-cursor" class="ml-1 px-2 py-0.5 rounded bg-[#c84b31] text-white mono text-[10px] font-bold">
+              --
+            </span>
+          </div>
+
+          <div class="flex-1 flex items-center gap-2">
+            <span id="lbl-t-start" class="mono text-[10px] text-muted">--</span>
+            <input id="slider-timeline" type="range" min="0" max="10" value="0" oninput="moverCursorTimeline(this.value)" class="flex-1 h-1.5" />
+            <span id="lbl-t-end" class="mono text-[10px] text-muted">--</span>
+          </div>
+
+          <div id="barra-hitos" class="hidden md:flex items-center gap-1"></div>
+        </div>
+
+        <div class="flex-1 grid grid-cols-12 divide-x panel-border overflow-hidden">
+          <div class="col-span-4 p-2 flex flex-col">
+            <div class="flex justify-between items-baseline mb-1">
+              <span id="lbl-chart-1" class="text-[10px] font-bold text-muted uppercase">Lluvia (mm) y Retención en Suelo (mm/m)</span>
+              <span id="stat-g1" class="mono text-[10px] font-bold text-[#1d4ed8]">--</span>
+            </div>
+            <div class="flex-1 relative"><canvas id="chartAgua"></canvas></div>
+          </div>
+
+          <div class="col-span-5 p-2 flex flex-col">
+            <div class="flex justify-between items-baseline mb-1">
+              <span id="lbl-chart-2" class="text-[10px] font-bold text-muted uppercase">Erosión en Ladera (%): Monocultivo (Rojo) vs Elegida (Verde)</span>
+              <span id="stat-g2" class="mono text-[10px] font-bold text-[#2d6a4f]">--</span>
+            </div>
+            <div class="flex-1 relative"><canvas id="chartComparativa"></canvas></div>
+          </div>
+
+          <div class="col-span-3 p-2 flex flex-col">
+            <div class="flex justify-between items-baseline mb-1">
+              <span id="lbl-chart-3" class="text-[10px] font-bold text-muted uppercase">Corte Topográfico SRTM (6 km)</span>
+              <span id="stat-g3" class="mono text-[10px] font-bold text-main">--</span>
+            </div>
+            <div class="flex-1 relative"><canvas id="chartPerfil"></canvas></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- PANEL LATERAL DERECHO: SELECCIÓN DE GRANOS (REGLA >= 2 CULTIVOS) Y ESTRATEGIAS -->
+    <aside class="w-full lg:w-96 bg-main border-l panel-border flex flex-col shrink-0 z-20 max-h-[45vh] lg:max-h-none">
+      <div class="grid grid-cols-2 border-b panel-border bg-sand text-[11px] font-bold text-muted">
+        <button id="tab-btn-rotaciones" onclick="cambiarTab('rotaciones')" class="py-2.5 border-b-2 border-[#c84b31] text-main bg-main">
+          Granos y Rotaciones
+        </button>
+        <button id="tab-btn-suelo" onclick="cambiarTab('suelo')" class="py-2.5 border-b-2 border-transparent hover:text-main">
+          Suelo y Escenarios
+        </button>
+      </div>
+
+      <!-- PESTAÑA 1: SELECTOR DE GRANOS (MÍNIMO 2 PARA ROTAR) + SUGERENCIA + TARJETAS -->
+      <div id="tab-rotaciones" class="flex-1 overflow-y-auto p-3 space-y-2.5">
+
+        <div class="bg-ivory p-2.5 rounded border panel-border space-y-2">
+          <div class="flex justify-between items-center">
+            <span id="lbl-grain-title" class="text-[10px] font-bold uppercase tracking-wider text-main">
+              1. Selecciona los Granos a Rotar (Mín. 2):
+            </span>
+            <span id="badge-conteo-granos" class="mono text-[9px] font-bold px-1.5 py-0.5 rounded bg-[#2d6a4f] text-white">
+              4 seleccionados
+            </span>
+          </div>
+
+          <div id="botones-granos" class="flex flex-wrap gap-1 text-[10px] font-semibold">
+            <button onclick="toggleGrano('maiz')" id="chip-maiz" class="px-2 py-1 rounded border transition">Maíz</button>
+            <button onclick="toggleGrano('frijol')" id="chip-frijol" class="px-2 py-1 rounded border transition">Frijol</button>
+            <button onclick="toggleGrano('sorgo')" id="chip-sorgo" class="px-2 py-1 rounded border transition">Sorgo</button>
+            <button onclick="toggleGrano('caupi')" id="chip-caupi" class="px-2 py-1 rounded border transition">Caupí</button>
+            <button onclick="toggleGrano('cafe')" id="chip-cafe" class="px-2 py-1 rounded border transition">Café</button>
+            <button onclick="toggleGrano('canavalia')" id="chip-canavalia" class="px-2 py-1 rounded border transition">Canavalia (Cob.)</button>
+            <button onclick="toggleGrano('mucuna')" id="chip-mucuna" class="px-2 py-1 rounded border transition">Mucuna (Abono)</button>
+          </div>
+
+          <div id="caja-validacion-rotacion" class="p-2 rounded border text-[10px] leading-snug">
+            <div id="titulo-validacion-rot" class="font-bold mb-0.5">Analizando combinación de cultivos...</div>
+            <div id="texto-sugerencia-rot">--</div>
+          </div>
+        </div>
+
+        <div class="bg-ivory p-2 rounded border panel-border text-[10px] leading-snug">
+          <span id="lbl-diag-title" class="font-bold text-main">Efecto en Fecha Activa:</span>
+          <span id="resumen-efecto-rotacion" class="text-muted">--</span>
+        </div>
+
+        <div id="contenedor-rotaciones" class="space-y-2"></div>
+
+        <div class="bg-ivory p-2.5 rounded border panel-border space-y-1.5">
+          <div class="flex justify-between items-center text-[10px]">
+            <span id="lbl-cal-title" class="font-bold uppercase text-muted">Protección Anual del Suelo</span>
+            <span class="text-muted"><b class="text-[#2d6a4f]">■</b> <span id="lbl-cubierto">Cubierto</span> · <b class="text-[#c84b31]">■</b> <span id="lbl-desnudo">Desnudo</span></span>
+          </div>
+          <div id="calendario-meses" class="grid grid-cols-12 gap-0.5 text-[9px] mono text-center font-bold"></div>
+          <div class="pt-1 text-[10px] text-muted leading-snug">
+            <strong id="lbl-val-title" class="text-main">Validación en Campo:</strong>
+            <span id="txt-validacion">--</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- PESTAÑA 2: PARÁMETROS DE SUELO, TENDENCIAS MANN-KENDALL Y ESCENARIOS CLIMÁTICOS -->
+      <div id="tab-suelo" class="hidden flex-1 overflow-y-auto p-3 space-y-3">
+        <div class="bg-ivory p-2.5 rounded border panel-border space-y-1.5 text-[11px]">
+          <div class="text-[10px] font-bold uppercase tracking-wider text-muted">Tendencia Satelital (Mann-Kendall / Sen)</div>
+          <div class="grid grid-cols-3 gap-1.5 mono text-[10px] pt-1 text-center">
+            <div class="bg-main p-1.5 rounded border panel-border">
+              <span class="text-muted block text-[8px]">CANÍCULA MEDIA</span>
+              <b id="mk-canicula" class="text-[#c84b31]">-- días</b>
+            </div>
+            <div class="bg-main p-1.5 rounded border panel-border">
+              <span class="text-muted block text-[8px]">TENDENCIA LLUVIA</span>
+              <b id="mk-lluvia" class="text-[#1d4ed8]">-- mm/déc</b>
+            </div>
+            <div class="bg-main p-1.5 rounded border panel-border">
+              <span class="text-muted block text-[8px]">TENDENCIA CALOR</span>
+              <b id="mk-temp" class="text-amber-700">-- °C/déc</b>
+            </div>
+          </div>
+        </div>
+
+        <div class="bg-ivory p-2.5 rounded border panel-border space-y-1.5 text-[11px]">
+          <div id="lbl-soil-title" class="text-[10px] font-bold uppercase tracking-wider text-muted">Parámetros Edafológicos Extraídos</div>
+          <div class="grid grid-cols-2 gap-1.5 mono text-[10px] pt-1">
+            <div class="bg-main p-1.5 rounded border panel-border">
+              <span class="text-muted block text-[9px]">ARCILLA / ARENA</span>
+              <b id="ficha-arcilla" class="text-main">--% / --%</b>
+            </div>
+            <div class="bg-main p-1.5 rounded border panel-border">
+              <span class="text-muted block text-[9px]">FACTOR K (RUSLE)</span>
+              <b id="ficha-k" class="text-main">--</b>
+            </div>
+            <div class="bg-main p-1.5 rounded border panel-border">
+              <span class="text-muted block text-[9px]">CAPACIDAD DE CAMPO</span>
+              <b id="ficha-fc" class="text-main">--% vol</b>
+            </div>
+            <div class="bg-main p-1.5 rounded border panel-border">
+              <span class="text-muted block text-[9px]">PUNTO DE MARCHITEZ</span>
+              <b id="ficha-wp" class="text-main">--% vol</b>
+            </div>
+          </div>
+        </div>
+
+        <div class="bg-ivory p-2.5 rounded border panel-border space-y-2">
+          <div id="lbl-sim-title" class="text-[10px] font-bold uppercase tracking-wider text-muted">Simulador de Escenarios Climáticos</div>
+          <div>
+            <div class="flex justify-between text-[11px]">
+              <span id="lbl-rain-var">Variación de Lluvia (%):</span>
+              <span id="lbl-sim-p" class="mono font-bold text-[#1d4ed8]">0%</span>
+            </div>
+            <input id="sl-lluvia" type="range" min="-40" max="40" step="5" value="0" onchange="ejecutarAnalisis()" class="w-full h-1.5" />
+          </div>
+          <div>
+            <div class="flex justify-between text-[11px]">
+              <span id="lbl-temp-var">Anomalía Térmica (+°C):</span>
+              <span id="lbl-sim-t" class="mono font-bold text-[#c84b31]">+0.0 °C</span>
+            </div>
+            <input id="sl-temp" type="range" min="0" max="3.5" step="0.5" value="0" onchange="ejecutarAnalisis()" class="w-full h-1.5" />
+          </div>
+        </div>
+
+        <div class="bg-ivory p-2.5 rounded border panel-border space-y-2 text-[11px]">
+          <div class="text-[10px] font-bold uppercase tracking-wider text-muted">Prioridades del Productor (Multicriterio)</div>
+          <div>
+            <div class="flex justify-between"><span>Prioridad: Ahorro de Agua</span><span class="mono">40%</span></div>
+            <input id="w-agua" type="range" min="0.1" max="1" step="0.1" value="0.40" onchange="ejecutarAnalisis()" class="w-full h-1" />
+          </div>
+          <div>
+            <div class="flex justify-between"><span>Prioridad: Frenar Erosión de Suelo</span><span class="mono">35%</span></div>
+            <input id="w-suelo" type="range" min="0.1" max="1" step="0.1" value="0.35" onchange="ejecutarAnalisis()" class="w-full h-1" />
+          </div>
+          <div>
+            <div class="flex justify-between"><span>Prioridad: Estabilidad Productiva</span><span class="mono">25%</span></div>
+            <input id="w-ingreso" type="range" min="0.1" max="1" step="0.1" value="0.25" onchange="ejecutarAnalisis()" class="w-full h-1" />
+          </div>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <script>
+    const INFO_CULTIVOS_LOCAL = {
+      maiz: { es: "Maíz", en: "Maize", leg: false, cob: false },
+      frijol: { es: "Frijol", en: "Common Bean", leg: true, cob: false },
+      sorgo: { es: "Sorgo", en: "Sorghum", leg: false, cob: false },
+      caupi: { es: "Caupí", en: "Cowpea", leg: true, cob: true },
+      cafe: { es: "Café", en: "Coffee", leg: false, cob: false },
+      canavalia: { es: "Canavalia", en: "Canavalia", leg: true, cob: true },
+      mucuna: { es: "Mucuna", en: "Mucuna", leg: true, cob: true }
+    };
+
+    const I18N = {
+      es: {
+        placeholderBuscar: "Buscar localidad o país...",
+        btnIr: "Ir",
+        optDias: "Días", optSemanas: "Semanas", optMeses: "Meses", optAnios: "Años",
+        varRetencion: "Variable: Humedad y Retención en Suelo (SMAP L4)",
+        varCobertura: "Variable: Cobertura Vegetal Fenológica (MODIS NDVI)",
+        varErosion: "Variable: Erosión Hídrica en Laderas (RUSLE %)",
+        varTemp: "Variable: Temperatura Superficial por Altitud (°C)",
+        varRadiacion: "Variable: Radiación Solar Incidente (MJ/m²/d)",
+        varLluvia: "Variable: Precipitación Diaria (GPM IMERG mm)",
+        escGlobal: "Capa: Satélite Oficial NASA GIBS + Relieve 3D",
+        escDem: "Capa: Solo Malla Local de Ladera (SRTM)",
+        card1: "1. Cobertura Vegetal",
+        card2: "2. Tipo de Suelo (USDA)",
+        card3: "3. Pendiente Real DEM",
+        card4: "4. Retención de Suelo",
+        card5: "5. Radiación y Temperatura",
+        timelineTitle: "Fecha Activa:",
+        chart1: "Lluvia (mm) y Retención en Suelo (mm/m)",
+        chart2: "Erosión en Ladera (%): Monocultivo (Rojo) vs Elegida (Verde)",
+        chart3: "Corte Topográfico SRTM (6 km)",
+        tabRot: "Granos y Rotaciones",
+        tabSuelo: "Suelo y Escenarios",
+        grainTitle: "1. Selecciona los Granos a Rotar (Mín. 2):",
+        diagTitle: "Efecto en Fecha Activa:",
+        calTitle: "Protección Anual del Suelo",
+        cubierto: "Cubierto", desnudo: "Desnudo",
+        valTitle: "Validación en Campo:",
+        soilTitle: "Parámetros Edafológicos Extraídos",
+        simTitle: "Simulador de Escenarios Climáticos",
+        rainVar: "Variación de Lluvia (%):",
+        tempVar: "Anomalía Térmica (+°C):"
+      },
+      en: {
+        placeholderBuscar: "Search town, valley or country...",
+        btnIr: "Go",
+        optDias: "Days", optSemanas: "Weeks", optMeses: "Months", optAnios: "Years",
+        varRetencion: "Variable: Soil Moisture & Retention (SMAP L4)",
+        varCobertura: "Variable: Phenological Vegetation Cover (MODIS NDVI)",
+        varErosion: "Variable: Slope Erosion Risk (RUSLE %)",
+        varTemp: "Variable: Surface Temperature by Altitude (°C)",
+        varRadiacion: "Variable: Solar Radiation (MJ/m²/d)",
+        varLluvia: "Variable: Daily Precipitation (GPM IMERG mm)",
+        escGlobal: "Layer: Official NASA GIBS Satellite + 3D Relief",
+        escDem: "Layer: Local Slope Mesh Only (SRTM)",
+        card1: "1. Vegetation Cover",
+        card2: "2. Soil Type (USDA)",
+        card3: "3. Real DEM Slope",
+        card4: "4. Soil Water Retention",
+        card5: "5. Solar Rad & Temperature",
+        timelineTitle: "Active Date:",
+        chart1: "Rainfall (mm) & Soil Retention (mm/m)",
+        chart2: "Slope Erosion (%): Monoculture (Red) vs Selected (Green)",
+        chart3: "SRTM Profile (6 km)",
+        tabRot: "Grains & Rotations",
+        tabSuelo: "Soil & Scenarios",
+        grainTitle: "1. Select Grains to Rotate (Min. 2):",
+        diagTitle: "Effect on Active Date:",
+        calTitle: "Annual Soil Protection Calendar",
+        cubierto: "Covered", desnudo: "Bare",
+        valTitle: "Field Validation:",
+        soilTitle: "Extracted Soil Physical Parameters",
+        simTitle: "Climate Scenario Simulator",
+        rainVar: "Rainfall Variation (%):",
+        tempVar: "Thermal Anomaly (+°C):"
+      }
+    };
+
+    let idiomaActual = "es";
+    let temaOscuro = false;
+    let latActual = 13.4850;
+    let lonActual = -86.5820;
+    let nombreActual = "Somoto, Madriz";
+    let datos = null;
+    let rotIdx = 1;
+    let granosActivos = ["maiz", "frijol", "sorgo", "canavalia"];
+
+    let cursorIdx = 0;
+    let fechaFijadaPorUsuario = null;
+    let cargaInicialCompletada = false;
+    let mapaListo = false;
+
+    let playInterval = null;
+    let chartAguaInst = null;
+    let chartCompInst = null;
+    let chartPerfilInst = null;
+    let calloutMarkers = [];
+
+    const map = new maplibregl.Map({
+      container: "map",
+      center: [lonActual, latActual],
+      zoom: 11.2,
+      pitch: 55,
+      bearing: -15,
+      maxPitch: 78,
+      style: {
+        version: 8,
+        sources: {
+          topoBase: {
+            type: "raster",
+            tiles: ["https://a.tile.opentopomap.org/{z}/{x}/{y}.png"],
+            tileSize: 256,
+            maxzoom: 15
+          },
+          sateliteImg: {
+            type: "raster",
+            tiles: ["https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"],
+            tileSize: 256,
+            maxzoom: 17
+          },
+          terrainDEM: {
+            type: "raster-dem",
+            tiles: ["https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"],
+            encoding: "terrarium",
+            tileSize: 256,
+            maxzoom: 14
+          },
+          hillshadeDEM: {
+            type: "raster-dem",
+            tiles: ["https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"],
+            encoding: "terrarium",
+            tileSize: 256,
+            maxzoom: 14
+          },
+          nasaGibsGlobal: {
+            type: "raster",
+            tiles: ["https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/SMAP_L4_Analyzed_Root_Zone_Soil_Moisture/default/2020-11-17/GoogleMapsCompatible_Level6/{z}/{y}/{x}.png"],
+            tileSize: 256
+          }
+        },
+        layers: [
+          { id: "fondo-base", type: "background", paint: { "background-color": "#e6dec8" } },
+          { id: "topo-layer", type: "raster", source: "topoBase", paint: { "raster-opacity": 0.38, "raster-saturation": -0.50 } },
+          { id: "satelite-layer", type: "raster", source: "sateliteImg", paint: { "raster-opacity": 0.45, "raster-saturation": -0.12 } },
+          {
+            id: "hillshade-layer",
+            type: "hillshade",
+            source: "hillshadeDEM",
+            paint: {
+              "hillshade-exaggeration": 0.78,
+              "hillshade-shadow-color": "#231f1a",
+              "hillshade-highlight-color": "#fdfbf7",
+              "hillshade-accent-color": "#5c5346"
+            }
+          },
+          {
+            id: "nasa-gibs-layer",
+            type: "raster",
+            source: "nasaGibsGlobal",
+            layout: { visibility: "visible" },
+            paint: { "raster-opacity": 0.55 }
+          }
+        ],
+        terrain: { source: "terrainDEM", exaggeration: 1.35 }
+      }
+    });
+
+    map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), "top-right");
+
+    // Color físico estricto para cada celda topográfica (sin cuadros sólidos ni círculos)
+    function colorHexFisicoCelda(variable, valor, esAgua) {
+      if (esAgua) return null;
+      if (variable === "erosion") {
+        if (valor < 3.0) return null;
+        if (valor < 18.0) return "#facc15";
+        if (valor < 40.0) return "#f97316";
+        if (valor < 68.0) return "#dc2626";
+        return "#991b1b";
+      }
+      if (variable === "retencion") {
+        if (valor < 30.0) return "#dc2626";
+        if (valor < 50.0) return "#eab308";
+        if (valor < 75.0) return "#10b981";
+        return "#1d4ed8";
+      }
+      if (variable === "cobertura") {
+        if (valor < 28.0) return "#c84b31";
+        if (valor < 52.0) return "#d97706";
+        if (valor < 75.0) return "#22c55e";
+        return "#15803d";
+      }
+      if (variable === "temperatura") {
+        if (valor < 21.0) return "#06b6d4";
+        if (valor < 26.0) return "#22c55e";
+        if (valor < 30.5) return "#facc15";
+        if (valor < 34.0) return "#f97316";
+        return "#dc2626";
+      }
+      if (variable === "lluvia") {
+        if (valor < 1.0) return null;
+        if (valor < 12.0) return "#38bdf8";
+        if (valor < 35.0) return "#2563eb";
+        if (valor < 70.0) return "#7c3aed";
+        return "#be123c";
+      }
+      // Radiación solar (MJ/m²/d)
+      if (valor < 12.0) return "#38bdf8";
+      if (valor < 17.5) return "#84cc16";
+      if (valor < 22.0) return "#facc15";
+      if (valor < 25.5) return "#f97316";
+      return "#dc2626";
+    }
+
+    function construirGeoJSONMallaLocal(variable, celdas, cobPaso, smapPaso, radPaso, lluviaPaso, tmaxPaso, elevCentro, factorC, factorK) {
+      if (!Array.isArray(celdas) || celdas.length === 0) {
+        return { type: "FeatureCollection", features: [] };
+      }
+      const features = [];
+      celdas.forEach(c => {
+        if (c.es_agua) return;
+        const slope = c.pendiente_pct;
+        const diffElevKm = (c.elev_m - elevCentro) / 1000.0;
+        let valorCelda = 0;
+
+        if (variable === "erosion") {
+          if (lluviaPaso < 1.2 || slope < 2.0) return;
+          const ls = Math.pow(slope / 9.0, 1.25);
+          valorCelda = Math.min(100.0, (lluviaPaso * 1.35) * Math.pow(smapPaso / 100.0, 1.2) * ls * (factorK / 0.25) * (factorC / 0.35));
+        } else if (variable === "retencion") {
+          valorCelda = Math.max(8.0, Math.min(100.0, smapPaso - slope * 0.42 + (1.0 - factorC) * 14.0));
+        } else if (variable === "cobertura") {
+          valorCelda = Math.max(6.0, Math.min(98.0, cobPaso - slope * 0.30 * factorC));
+        } else if (variable === "temperatura") {
+          valorCelda = tmaxPaso - diffElevKm * 6.5;
+        } else if (variable === "lluvia") {
+          valorCelda = lluviaPaso * (1.0 + Math.max(-0.2, diffElevKm * 0.25));
+        } else {
+          valorCelda = radPaso + diffElevKm * 1.4 - (slope * 0.04);
+        }
+
+        const colorHex = colorHexFisicoCelda(variable, valorCelda, c.es_agua);
+        if (!colorHex) return;
+
+        const rLon = c.d_lon * 0.48;
+        const rLat = c.d_lat * 0.48;
+        features.push({
+          type: "Feature",
+          properties: {
+            color: colorHex,
+            opacidad: variable === "erosion" ? Math.min(0.55, Math.max(0.18, valorCelda / 110.0)) : 0.32
+          },
+          geometry: {
+            type: "Polygon",
+            coordinates: [[
+              [c.lon - rLon, c.lat - rLat],
+              [c.lon + rLon, c.lat - rLat],
+              [c.lon + rLon, c.lat + rLat],
+              [c.lon - rLon, c.lat + rLat],
+              [c.lon - rLon, c.lat - rLat]
+            ]]
+          }
+        });
+      });
+      return { type: "FeatureCollection", features: features };
+    }
+
+    function generarValidacionGranosLocal(pendientePct) {
+      const n = granosActivos.length;
+      if (n < 2) {
+        const unico = INFO_CULTIVOS_LOCAL[granosActivos[0]] || INFO_CULTIVOS_LOCAL.maiz;
+        return {
+          es_valida: false,
+          mensaje_es: `⚠️ Sin Rotación (${n} cultivo activo: ${unico.es}): Selecciona al menos 2 cultivos distintos para activar la rotación.`,
+          mensaje_en: `⚠️ No Rotation (${n} active crop: ${unico.en}): Select at least 2 distinct crops to enable rotation.`,
+          sugerencia_es: `Sugerencia para pendiente de ${pendientePct}%: Activa al menos una leguminosa (Frijol, Caupí o Canavalia) arriba para fijar nitrógeno y proteger el suelo.`,
+          sugerencia_en: `Suggestion for ${pendientePct}% slope: Enable at least one legume (Bean, Cowpea, or Canavalia) above to fix nitrogen and protect soil.`
+        };
+      }
+
+      const tieneLeg = granosActivos.some(g => INFO_CULTIVOS_LOCAL[g] && INFO_CULTIVOS_LOCAL[g].leg);
+      const tieneCob = granosActivos.some(g => INFO_CULTIVOS_LOCAL[g] && INFO_CULTIVOS_LOCAL[g].cob);
+      const nombresEs = granosActivos.map(g => INFO_CULTIVOS_LOCAL[g].es).join(", ");
+      const nombresEn = granosActivos.map(g => INFO_CULTIVOS_LOCAL[g].en).join(", ");
+
+      if (!tieneLeg) {
+        return {
+          es_valida: true,
+          mensaje_es: `⚠️ Rotación sin Leguminosas (${n} cultivos: ${nombresEs})`,
+          mensaje_en: `⚠️ Rotation Lacks Legumes (${n} crops: ${nombresEn})`,
+          sugerencia_es: `Rotar solo gramíneas agota el nitrógeno del suelo (-70 kg/ha). Agrega Frijol, Caupí o Canavalia para reponer fertilidad.`,
+          sugerencia_en: `Rotating only non-legumes depletes soil nitrogen (-70 kg/ha). Add Bean, Cowpea, or Canavalia to restore fertility.`
+        };
+      }
+      if (!tieneCob && pendientePct >= 10.0) {
+        return {
+          es_valida: true,
+          mensaje_es: `✓ Rotación de Granos Activa (${nombresEs})`,
+          mensaje_en: `✓ Active Grain Rotation (${nombresEn})`,
+          sugerencia_es: `Para proteger la pendiente (${pendientePct}%) en época seca (Dic–Abr), considera activar Canavalia o Mucuna.`,
+          sugerencia_en: `To protect the ${pendientePct}% slope during the dry season (Dec–Apr), consider enabling Canavalia or Mucuna.`
+        };
+      }
+      return {
+        es_valida: true,
+        mensaje_es: `✓ Sistema Completo de Rotación y Cobertura (${nombresEs})`,
+        mensaje_en: `✓ Complete Rotation & Cover System (${nombresEn})`,
+        sugerencia_es: `Combinación óptima para pendiente de ${pendientePct}%: integra producción de grano, fijación de nitrógeno y cobertura contra erosión.`,
+        sugerencia_en: `Optimal combination for ${pendientePct}% slope: integrates grain production, nitrogen fixation, and anti-erosion cover.`
+      };
+    }
+
+    function renderizarChipsGranos() {
+      const todos = ["maiz", "frijol", "sorgo", "caupi", "cafe", "canavalia", "mucuna"];
+      todos.forEach(id => {
+        const btn = document.getElementById(`chip-${id}`);
+        if (!btn) return;
+        const activo = granosActivos.includes(id);
+        btn.className = activo
+          ? "px-2 py-1 rounded border border-[#2d6a4f] bg-[#2d6a4f] text-white shadow-sm transition"
+          : "px-2 py-1 rounded border panel-border bg-main text-muted hover:text-main transition";
+      });
+
+      const badge = document.getElementById("badge-conteo-granos");
+      const n = granosActivos.length;
+      if (n < 2) {
+        badge.className = "mono text-[9px] font-bold px-1.5 py-0.5 rounded bg-[#c84b31] text-white";
+        badge.innerText = idiomaActual === "es" ? `${n} (Sin rotación)` : `${n} (No rotation)`;
+      } else {
+        badge.className = "mono text-[9px] font-bold px-1.5 py-0.5 rounded bg-[#2d6a4f] text-white";
+        badge.innerText = idiomaActual === "es" ? `${n} seleccionados` : `${n} selected`;
+      }
+    }
+
+    function toggleGrano(idGrano) {
+      const idx = granosActivos.indexOf(idGrano);
+      if (idx !== -1) {
+        if (granosActivos.length > 1) {
+          granosActivos.splice(idx, 1);
+        }
+      } else {
+        granosActivos.push(idGrano);
+      }
+      renderizarChipsGranos();
+      ejecutarAnalisis();
+    }
+
+    function usarUbicacionGPS() {
+      const lbl = document.getElementById("lbl-gps");
+      if (!navigator.geolocation) return;
+      lbl.innerText = "...";
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          latActual = parseFloat(pos.coords.latitude.toFixed(4));
+          lonActual = parseFloat(pos.coords.longitude.toFixed(4));
+          nombreActual = idiomaActual === "es" ? `Mi Ubicación GPS (${latActual}, ${lonActual})` : `My GPS Location (${latActual}, ${lonActual})`;
+          lbl.innerText = "GPS";
+          map.flyTo({ center: [lonActual, latActual], zoom: 11.8, duration: 1400 });
+          ejecutarAnalisis();
+        },
+        () => { lbl.innerText = "GPS"; },
+        { enableHighAccuracy: true, timeout: 8000 }
+      );
+    }
+
+    function toggleTemaOscuro() {
+      temaOscuro = !temaOscuro;
+      document.body.classList.toggle("dark-theme", temaOscuro);
+      document.getElementById("btn-tema").innerText = temaOscuro ? "☀️" : "🌙";
+      if (datos) {
+        const rotActiva = datos.rotaciones[rotIdx] || datos.rotaciones[0];
+        dibujarGraficas(datos.ventana.series, datos.transecto, rotActiva);
+      }
+    }
+
+    function toggleIdioma() {
+      idiomaActual = idiomaActual === "es" ? "en" : "es";
+      document.getElementById("btn-idioma").innerText = idiomaActual.toUpperCase();
+      const t = I18N[idiomaActual];
+
+      document.getElementById("input-lugar").placeholder = t.placeholderBuscar;
+      document.getElementById("btn-buscar").innerText = t.btnIr;
+      document.getElementById("opt-dias").innerText = t.optDias;
+      document.getElementById("opt-semanas").innerText = t.optSemanas;
+      document.getElementById("opt-meses").innerText = t.optMeses;
+      document.getElementById("opt-anios").innerText = t.optAnios;
+
+      document.getElementById("opt-var-erosion").innerText = t.varErosion;
+      document.getElementById("opt-var-lluvia").innerText = t.varLluvia;
+      document.getElementById("opt-var-retencion").innerText = t.varRetencion;
+      document.getElementById("opt-var-cobertura").innerText = t.varCobertura;
+      document.getElementById("opt-var-temp").innerText = t.varTemp;
+      document.getElementById("opt-var-radiacion").innerText = t.varRadiacion;
+
+      document.getElementById("opt-esc-dem").innerText = t.escDem;
+      document.getElementById("opt-esc-global").innerText = t.escGlobal;
+
+      document.getElementById("lbl-card-1").innerText = t.card1;
+      document.getElementById("lbl-card-2").innerText = t.card2;
+      document.getElementById("lbl-card-3").innerText = t.card3;
+      document.getElementById("lbl-card-4").innerText = t.card4;
+      document.getElementById("lbl-card-5").innerText = t.card5;
+
+      document.getElementById("lbl-timeline-title").innerText = t.timelineTitle;
+      document.getElementById("lbl-chart-1").innerText = t.chart1;
+      document.getElementById("lbl-chart-2").innerText = t.chart2;
+      document.getElementById("lbl-chart-3").innerText = t.chart3;
+
+      document.getElementById("tab-btn-rotaciones").innerText = t.tabRot;
+      document.getElementById("tab-btn-suelo").innerText = t.tabSuelo;
+      document.getElementById("lbl-grain-title").innerText = t.grainTitle;
+      document.getElementById("lbl-diag-title").innerText = t.diagTitle;
+      document.getElementById("lbl-cal-title").innerText = t.calTitle;
+      document.getElementById("lbl-cubierto").innerText = t.cubierto;
+      document.getElementById("lbl-desnudo").innerText = t.desnudo;
+      document.getElementById("lbl-val-title").innerText = t.valTitle;
+
+      document.getElementById("lbl-soil-title").innerText = t.soilTitle;
+      document.getElementById("lbl-sim-title").innerText = t.simTitle;
+      document.getElementById("lbl-rain-var").innerText = t.rainVar;
+      document.getElementById("lbl-temp-var").innerText = t.tempVar;
+
+      renderizarChipsGranos();
+      renderizarTodo();
+    }
+
+    map.on("load", () => {
+      mapaListo = true;
+      map.addSource("malla-local-source", {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] }
+      });
+      map.addLayer({
+        id: "malla-local-fill",
+        type: "fill",
+        source: "malla-local-source",
+        paint: {
+          "fill-color": ["get", "color"],
+          "fill-opacity": ["get", "opacidad"]
+        }
+      });
+
+      map.addSource("transecto-source", {
+        type: "geojson",
+        data: { type: "FeatureCollection", features: [] }
+      });
+      map.addLayer({
+        id: "transecto-line",
+        type: "line",
+        source: "transecto-source",
+        paint: { "line-color": "#facc15", "line-width": 2.4, "line-dasharray": [2, 2] }
+      });
+
+      if (datos) renderizarTodo();
+    });
+
+    window.addEventListener("DOMContentLoaded", () => {
+      renderizarChipsGranos();
+      ejecutarAnalisis();
+    });
+
+    map.on("click", (e) => {
+      latActual = parseFloat(e.lngLat.lat.toFixed(4));
+      lonActual = parseFloat(e.lngLat.lng.toFixed(4));
+      nombreActual = `Parcela (${latActual}, ${lonActual})`;
+      ejecutarAnalisis();
+    });
+
+    function cambiarEscalaVista() {
+      const modo = document.getElementById("select-escala-vista").value;
+      if (mapaListo && map.getLayer("nasa-gibs-layer")) {
+        map.setLayoutProperty("nasa-gibs-layer", "visibility", modo === "hibrido_global" ? "visible" : "none");
+      }
+      actualizarSuperficieFisica();
+    }
+
+    function sincronizarNasaGibsConFecha(fechaStr, variable) {
+      let layer = "SMAP_L4_Analyzed_Root_Zone_Soil_Moisture";
+      let matrix = "GoogleMapsCompatible_Level6";
+      if (variable === "cobertura") {
+        layer = "MODIS_Terra_NDVI_8Day";
+        matrix = "GoogleMapsCompatible_Level9";
+      } else if (variable === "radiacion" || variable === "temperatura") {
+        layer = "MODIS_Terra_Land_Surface_Temp_Day";
+        matrix = "GoogleMapsCompatible_Level7";
+      } else if (variable === "lluvia" || variable === "erosion") {
+        layer = "IMERG_Precipitation_Rate";
+        matrix = "GoogleMapsCompatible_Level6";
+      }
+
+      const fGibs = (fechaStr && fechaStr.length === 10) ? fechaStr : "2020-11-17";
+      const urlGibs = `https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/${layer}/default/${fGibs}/${matrix}/{z}/{y}/{x}.png`;
+      if (mapaListo && map.getSource("nasaGibsGlobal")) {
+        map.getSource("nasaGibsGlobal").setTiles([urlGibs]);
+      }
+    }
+
+    function cambiarModoVista(modo) {
+      const b3d = document.getElementById("btn-vista-3d");
+      const b2d = document.getElementById("btn-vista-2d");
+      if (modo === "2d") {
+        map.setTerrain(null);
+        map.easeTo({ pitch: 0, bearing: 0, duration: 750 });
+        b2d.className = "px-2 py-0.5 rounded bg-[#c84b31] text-white transition";
+        b3d.className = "px-2 py-0.5 rounded text-main transition";
+      } else {
+        map.setTerrain({ source: "terrainDEM", exaggeration: 1.35 });
+        map.easeTo({ pitch: 55, bearing: -15, duration: 750 });
+        b3d.className = "px-2 py-0.5 rounded bg-[#c84b31] text-white transition";
+        b2d.className = "px-2 py-0.5 rounded text-main transition";
+      }
+    }
+
+    async function buscarLocalidad() {
+      const q = document.getElementById("input-lugar").value.trim();
+      if (!q) return;
+      const r = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(q)}&limit=1`);
+      const items = await r.json();
+      if (items.length > 0) {
+        latActual = parseFloat(parseFloat(items[0].lat).toFixed(4));
+        lonActual = parseFloat(parseFloat(items[0].lon).toFixed(4));
+        nombreActual = items[0].display_name.split(",").slice(0, 2).join(",");
+        map.flyTo({ center: [lonActual, latActual], zoom: 11.5, duration: 1300 });
+        ejecutarAnalisis();
+      }
+    }
+
+    function cambiarTab(tabId) {
+      ["rotaciones", "suelo"].forEach(t => {
+        document.getElementById(`tab-${t}`).classList.toggle("hidden", t !== tabId);
+        document.getElementById(`tab-btn-${t}`).className = t === tabId
+          ? "py-2.5 border-b-2 border-[#c84b31] text-main bg-main"
+          : "py-2.5 border-b-2 border-transparent hover:text-main";
+      });
+    }
+
+    async function ejecutarAnalisis() {
+      try {
+        const fIni = document.getElementById("fecha-ini").value;
+        const fFin = document.getElementById("fecha-fin").value;
+        const grp = document.getElementById("select-agrupacion").value;
+        const cLluvia = document.getElementById("sl-lluvia").value;
+        const cTemp = document.getElementById("sl-temp").value;
+        const wAgua = document.getElementById("w-agua").value;
+        const wSuelo = document.getElementById("w-suelo").value;
+        const wIngreso = document.getElementById("w-ingreso").value;
+
+        document.getElementById("lbl-sim-p").innerText = `${cLluvia > 0 ? '+' : ''}${cLluvia}%`;
+        document.getElementById("lbl-sim-t").innerText = `+${cTemp} °C`;
+
+        const granosParam = granosActivos.join(",");
+        const baseUrl = window.location.protocol === "file:" ? "http://127.0.0.1:8000" : "";
+        const url = `${baseUrl}/api/analizar?lat=${latActual}&lon=${lonActual}&nombre_lugar=${encodeURIComponent(nombreActual)}&fecha_inicio=${fIni}&fecha_fin=${fFin}&agrupacion=${grp}&granos_seleccionados=${encodeURIComponent(granosParam)}&cambio_lluvia=${cLluvia}&cambio_temp=${cTemp}&w_agua=${wAgua}&w_suelo=${wSuelo}&w_ingreso=${wIngreso}`;
+
+        const r = await fetch(url);
+        datos = await r.json();
+
+        if (granosActivos.length < 2 && datos.rotaciones && datos.rotaciones.length > 1) {
+          datos.rotaciones = [datos.rotaciones[0]];
+          rotIdx = 0;
+        } else if (datos.rotaciones && datos.rotaciones.length > 1) {
+          let maxPts = -1;
+          let bestIdx = 1;
+          datos.rotaciones.forEach((rot, idx) => {
+            if (idx > 0 && rot.score_multicriterio > maxPts) {
+              maxPts = rot.score_multicriterio;
+              bestIdx = idx;
+            }
+          });
+          rotIdx = bestIdx;
+        } else {
+          rotIdx = 0;
+        }
+
+        const etiquetas = datos.ventana.series.etiquetas;
+        const totalPasos = Math.max(0, etiquetas.length - 1);
+        const sl = document.getElementById("slider-timeline");
+        sl.max = totalPasos;
+
+        if (!cargaInicialCompletada) {
+          cursorIdx = Math.min(totalPasos, datos.ventana.hitos[0] ? datos.ventana.hitos[0].indice : 0);
+          fechaFijadaPorUsuario = etiquetas[cursorIdx];
+          cargaInicialCompletada = true;
+        } else if (fechaFijadaPorUsuario && etiquetas.indexOf(fechaFijadaPorUsuario) !== -1) {
+          cursorIdx = etiquetas.indexOf(fechaFijadaPorUsuario);
+        } else {
+          cursorIdx = Math.min(totalPasos, Math.max(0, cursorIdx));
+          fechaFijadaPorUsuario = etiquetas[cursorIdx];
+        }
+
+        sl.value = cursorIdx;
+        document.getElementById("link-auditoria-nasa").href = datos.url_auditoria_nasa;
+        renderizarTodo();
+      } catch (err) {
+        console.error("Error al procesar datos:", err);
+      }
+    }
+
+    function saltarAPaso(idx) {
+      if (!datos) return;
+      cursorIdx = idx;
+      fechaFijadaPorUsuario = datos.ventana.series.etiquetas[cursorIdx];
+      document.getElementById("slider-timeline").value = cursorIdx;
+      actualizarSuperficieFisica();
+    }
+
+    function moverCursorTimeline(val) {
+      cursorIdx = parseInt(val);
+      if (datos && datos.ventana.series.etiquetas[cursorIdx]) {
+        fechaFijadaPorUsuario = datos.ventana.series.etiquetas[cursorIdx];
+      }
+      actualizarSuperficieFisica();
+    }
+
+    function pasoTimeline(delta) {
+      if (!datos) return;
+      const maxIdx = Math.max(0, datos.ventana.series.etiquetas.length - 1);
+      cursorIdx = Math.min(maxIdx, Math.max(0, cursorIdx + delta));
+      fechaFijadaPorUsuario = datos.ventana.series.etiquetas[cursorIdx];
+      document.getElementById("slider-timeline").value = cursorIdx;
+      actualizarSuperficieFisica();
+    }
+
+    function togglePlayTimeline() {
+      const btn = document.getElementById("btn-play");
+      if (playInterval) {
+        clearInterval(playInterval);
+        playInterval = null;
+        btn.innerText = "▶ Reproducir";
+        return;
+      }
+      btn.innerText = "⏸ Pausar";
+      if (datos && cursorIdx >= datos.ventana.series.etiquetas.length - 1) cursorIdx = 0;
+      playInterval = setInterval(() => {
+        if (!datos) return;
+        const maxIdx = datos.ventana.series.etiquetas.length - 1;
+        if (cursorIdx >= maxIdx) {
+          clearInterval(playInterval);
+          playInterval = null;
+          btn.innerText = "▶ Reproducir";
+        } else {
+          cursorIdx++;
+          fechaFijadaPorUsuario = datos.ventana.series.etiquetas[cursorIdx];
+          document.getElementById("slider-timeline").value = cursorIdx;
+          actualizarSuperficieFisica();
+        }
+      }, 420);
+    }
+
+    function actualizarSuperficieFisica() {
+      if (!datos) return;
+      const ub = datos.ubicacion;
+      const su = datos.suelo;
+      const ser = datos.ventana.series;
+      const rots = datos.rotaciones;
+      const rotActiva = rots[rotIdx] || rots[0];
+      const seriesRot = ser.por_rotacion[rotActiva.id] || ser.por_rotacion[rots[0].id];
+      const variable = document.getElementById("select-variable-mapa").value;
+
+      const fechaPaso = ser.etiquetas[cursorIdx] || datos.ventana.resumen.fecha_inicio;
+      const cobPaso = seriesRot.cobertura_pct[cursorIdx] || 0;
+      const ndviPaso = seriesRot.ndvi[cursorIdx] || 0.2;
+      const retPaso = seriesRot.retencion_agua_mm[cursorIdx] || 0;
+      const capMax = seriesRot.capacidad_max_mm_m || 130;
+      const smapPaso = ser.smap_raiz_pct[cursorIdx] || 50;
+      const radPaso = ser.radiacion_mj[cursorIdx] || 18;
+      const lluviaPaso = ser.lluvia_mm[cursorIdx] || 0;
+      const tmaxPaso = (ser.tmax_c && ser.tmax_c[cursorIdx] !== undefined) ? ser.tmax_c[cursorIdx] : 30;
+      const tminPaso = (ser.tmin_c && ser.tmin_c[cursorIdx] !== undefined) ? ser.tmin_c[cursorIdx] : 19;
+      const eroPaso = seriesRot.erosion_pct[cursorIdx] || 0;
+
+      const claseSuelo = idiomaActual === "es" ? su.clase_textural_es : su.clase_textural_en;
+      const nombreRot = idiomaActual === "es" ? rotActiva.nombre_es : rotActiva.nombre_en;
+
+      document.getElementById("top-lugar").innerText = ub.es_cuerpo_agua ? `${ub.nombre} [Agua]` : ub.nombre;
+      document.getElementById("top-fecha-paso").innerText = fechaPaso;
+      document.getElementById("top-coords").innerText = `Lat: ${ub.lat} | Lon: ${ub.lon} · Alt: ${ub.elevacion_m} m`;
+
+      document.getElementById("var-cobertura").innerText = `${cobPaso}%`;
+      document.getElementById("var-ndvi").innerText = `NDVI: ${ndviPaso}`;
+
+      document.getElementById("var-suelo-clase").innerText = claseSuelo;
+      document.getElementById("var-suelo-comp").innerText = `Arc:${su.arcilla_pct}% · Are:${su.arena_pct}% · MO:${su.materia_organica_pct}%`;
+
+      document.getElementById("var-pendiente").innerText = `${ub.pendiente_pct}%`;
+      document.getElementById("var-pendiente-grados").innerText = `${ub.pendiente_grados}° (Máx ${ub.pendiente_max_pct}%)`;
+
+      document.getElementById("var-retencion").innerText = `${retPaso}/${capMax} mm/m`;
+      document.getElementById("var-smap-actual").innerText = `SMAP: ${smapPaso}%`;
+
+      document.getElementById("var-radiacion").innerText = `${radPaso} MJ/m²`;
+      document.getElementById("var-lluvia-paso").innerText = `T:${tmaxPaso}°/${tminPaso}° · Ll:${lluviaPaso}mm`;
+
+      document.getElementById("badge-fecha-cursor").innerText = fechaPaso;
+
+      const lNom = document.getElementById("leyenda-nombre");
+      const lVal = document.getElementById("leyenda-valor-actual");
+      const lMin = document.getElementById("leyenda-min");
+      const lMed = document.getElementById("leyenda-med");
+      const lMax = document.getElementById("leyenda-max");
+      const lGrad = document.getElementById("leyenda-gradiente");
+
+      if (variable === "erosion") {
+        lNom.innerText = idiomaActual === "es" ? "Erosión en Laderas (RUSLE)" : "Slope Erosion (RUSLE)";
+        lVal.innerText = lluviaPaso < 1.2 ? "0% (Sin lluvia erosiva)" : `${eroPaso}%`;
+        lMin.innerText = "0% (Plano)";
+        lMed.innerText = "45% (Moderada)";
+        lMax.innerText = "100% (Crítica)";
+        lGrad.className = "w-full h-2.5 rounded-sm bg-gradient-to-r from-transparent via-[#facc15] via-[#f97316] to-[#991b1b] border border-white/20";
+      } else if (variable === "retencion") {
+        lNom.innerText = idiomaActual === "es" ? "Humedad y Retención (SMAP)" : "Water Retention (SMAP)";
+        lVal.innerText = `${retPaso} mm/m (${smapPaso}%)`;
+        lMin.innerText = "15% (Seco)";
+        lMed.innerText = "55% (Óptimo)";
+        lMax.innerText = "100% (Saturado)";
+        lGrad.className = "w-full h-2.5 rounded-sm bg-gradient-to-r from-[#dc2626] via-[#eab308] via-[#10b981] to-[#1d4ed8]";
+      } else if (variable === "cobertura") {
+        lNom.innerText = idiomaActual === "es" ? "Cobertura Vegetal (NDVI)" : "Vegetation Cover (NDVI)";
+        lVal.innerText = `${cobPaso}% (NDVI ${ndviPaso})`;
+        lMin.innerText = "10% (Suelo Desnudo)";
+        lMed.innerText = "50% (Media)";
+        lMax.innerText = "95% (Densa)";
+        lGrad.className = "w-full h-2.5 rounded-sm bg-gradient-to-r from-[#c84b31] via-[#d97706] to-[#15803d]";
+      } else if (variable === "temperatura") {
+        lNom.innerText = idiomaActual === "es" ? "Temperatura por Altitud" : "Temperature by Altitude";
+        lVal.innerText = `${tmaxPaso}°C / ${tminPaso}°C`;
+        lMin.innerText = "18 °C (Fresco)";
+        lMed.innerText = "28 °C (Templado)";
+        lMax.innerText = "37 °C (Cálido)";
+        lGrad.className = "w-full h-2.5 rounded-sm bg-gradient-to-r from-[#06b6d4] via-[#22c55e] via-[#facc15] to-[#dc2626]";
+      } else if (variable === "lluvia") {
+        lNom.innerText = idiomaActual === "es" ? "Precipitación Diaria (IMERG)" : "Daily Rainfall (IMERG)";
+        lVal.innerText = `${lluviaPaso} mm`;
+        lMin.innerText = "0 mm";
+        lMed.innerText = "35 mm";
+        lMax.innerText = ">80 mm";
+        lGrad.className = "w-full h-2.5 rounded-sm bg-gradient-to-r from-transparent via-[#38bdf8] via-[#2563eb] to-[#be123c] border border-white/20";
+      } else {
+        lNom.innerText = idiomaActual === "es" ? "Radiación Solar Incidente" : "Solar Radiation";
+        lVal.innerText = `${radPaso} MJ/m²/d`;
+        lMin.innerText = "8 MJ/m²";
+        lMed.innerText = "18 MJ/m²";
+        lMax.innerText = "28 MJ/m²";
+        lGrad.className = "w-full h-2.5 rounded-sm bg-gradient-to-r from-[#38bdf8] via-[#84cc16] via-[#facc15] to-[#dc2626]";
+      }
+
+      if (mapaListo && map.getSource("malla-local-source")) {
+        const geoMalla = construirGeoJSONMallaLocal(
+          variable,
+          datos.transecto.celdas_malla,
+          cobPaso,
+          smapPaso,
+          radPaso,
+          lluviaPaso,
+          tmaxPaso,
+          ub.elevacion_m,
+          seriesRot.factor_c_rusle,
+          su.factor_k_rusle
+        );
+        map.getSource("malla-local-source").setData(geoMalla);
+      }
+
+      calloutMarkers.forEach(m => m.remove());
+      calloutMarkers = [];
+      const elPin = document.createElement("div");
+      elPin.className = "map-callout";
+      elPin.innerHTML = ub.es_cuerpo_agua
+        ? `<span class="text-sky-300 font-bold">CUERPO DE AGUA (${ub.elevacion_m}m)</span> · Haz clic en tierra firme`
+        : `<span class="text-amber-300 font-bold">${ub.nombre.toUpperCase()} (${ub.elevacion_m}m)</span> · Pend: ${ub.pendiente_pct}% · ${claseSuelo.split('(')[0]}`;
+      calloutMarkers.push(new maplibregl.Marker({ element: elPin }).setLngLat([ub.lon, ub.lat]).addTo(map));
+
+      if (document.getElementById("select-escala-vista").value === "hibrido_global") {
+        sincronizarNasaGibsConFecha(fechaPaso, variable);
+      }
+
+      document.getElementById("resumen-efecto-rotacion").innerHTML = idiomaActual === "es"
+        ? ` <b>${fechaPaso}</b> (Lluvia: <b>${lluviaPaso} mm</b>): Con <b>${nombreRot}</b>, cobertura fenológica <b>${cobPaso}%</b>, reserva <b>${retPaso}/${capMax} mm/m</b> y erosión <b>${eroPaso}%</b>.`
+        : ` <b>${fechaPaso}</b> (Rain: <b>${lluviaPaso} mm</b>): Under <b>${nombreRot}</b>, phenological cover <b>${cobPaso}%</b>, reserve <b>${retPaso}/${capMax} mm/m</b>, erosion <b>${eroPaso}%</b>.`;
+    }
+
+    function renderizarTodo() {
+      if (!datos) return;
+      const ub = datos.ubicacion;
+      const su = datos.suelo;
+      const res = datos.ventana.resumen;
+      const ser = datos.ventana.series;
+      const rots = datos.rotaciones;
+      const valRot = datos.validacion_rotacion || generarValidacionGranosLocal(ub.pendiente_pct);
+      const mk = datos.tendencias_climaticas;
+      const rotActiva = rots[rotIdx] || rots[0];
+      const claseSuelo = idiomaActual === "es" ? su.clase_textural_es : su.clase_textural_en;
+
+      document.getElementById("lbl-t-start").innerText = res.fecha_inicio;
+      document.getElementById("lbl-t-end").innerText = res.fecha_fin;
+
+      if (mk) {
+        document.getElementById("mk-canicula").innerText = `${mk.canicula_media_dias} días (${mk.sen_canicula_decada > 0 ? '+' : ''}${mk.sen_canicula_decada}/déc)`;
+        document.getElementById("mk-lluvia").innerText = `${mk.sen_lluvia_decada > 0 ? '+' : ''}${mk.sen_lluvia_decada} mm/déc`;
+        document.getElementById("mk-temp").innerText = `${mk.sen_temp_decada > 0 ? '+' : ''}${mk.sen_temp_decada} °C/déc`;
+      }
+
+      document.getElementById("ficha-arcilla").innerText = `${su.arcilla_pct}% / ${su.arena_pct}%`;
+      document.getElementById("ficha-k").innerText = `${su.factor_k_rusle} (${claseSuelo.split('(')[0]})`;
+      document.getElementById("ficha-fc").innerText = `${su.capacidad_campo_pct}% vol`;
+      document.getElementById("ficha-wp").innerText = `${su.punto_marchitez_pct}% vol`;
+
+      document.getElementById("stat-g1").innerText = `Acumulado: ${res.lluvia_acumulada_mm} mm`;
+      document.getElementById("stat-g2").innerText = `Factor C: ${rotActiva.factor_c_rusle}`;
+      document.getElementById("stat-g3").innerText = `${datos.transecto.elevacion_min_m}m – ${datos.transecto.elevacion_max_m}m`;
+
+      if (mapaListo && map.getSource("transecto-source")) {
+        map.getSource("transecto-source").setData({
+          type: "FeatureCollection",
+          features: [{ type: "Feature", geometry: { type: "LineString", coordinates: datos.transecto.transecto_coords } }]
+        });
+      }
+
+      const cajaVal = document.getElementById("caja-validacion-rotacion");
+      const titVal = document.getElementById("titulo-validacion-rot");
+      const txtSug = document.getElementById("texto-sugerencia-rot");
+
+      if (!valRot.es_valida) {
+        cajaVal.className = "p-2 rounded border border-[#c84b31] bg-[#c84b31]/15 text-main text-[10px] leading-snug";
+        titVal.className = "font-bold text-[#c84b31] mb-0.5";
+        titVal.innerText = idiomaActual === "es" ? valRot.mensaje_es : valRot.mensaje_en;
+        txtSug.innerText = idiomaActual === "es" ? valRot.sugerencia_es : valRot.sugerencia_en;
+      } else {
+        cajaVal.className = "p-2 rounded border border-[#2d6a4f] bg-[#2d6a4f]/15 text-main text-[10px] leading-snug";
+        titVal.className = "font-bold text-[#2d6a4f] mb-0.5";
+        titVal.innerText = idiomaActual === "es" ? valRot.mensaje_es : valRot.mensaje_en;
+        txtSug.innerText = idiomaActual === "es" ? valRot.sugerencia_es : valRot.sugerencia_en;
+      }
+
+      document.getElementById("barra-hitos").innerHTML = datos.ventana.hitos.map(h => `
+        <button onclick="saltarAPaso(${h.indice})"
+                class="px-2 py-0.5 rounded bg-ivory hover:opacity-80 border panel-border text-[9px] mono text-main transition">
+          <b>${idiomaActual === 'es' ? h.titulo_es : h.titulo_en}:</b> ${h.valor} (${h.fecha})
+        </button>
+      `).join("");
+
+      let mejorScore = -1;
+      let mejorId = "";
+      if (rots.length > 1) {
+        rots.forEach((r, idx) => {
+          if (idx > 0 && r.score_multicriterio > mejorScore) {
+            mejorScore = r.score_multicriterio;
+            mejorId = r.id;
+          }
+        });
+      }
+
+      document.getElementById("contenedor-rotaciones").innerHTML = rots.map((r, i) => {
+        const nom = idiomaActual === "es" ? r.nombre_es : r.nombre_en;
+        const cal = idiomaActual === "es" ? r.calendario_es : r.calendario_en;
+        const desc = idiomaActual === "es" ? r.descripcion_es : r.descripcion_en;
+        const esRec = r.id === mejorId;
+        return `
+        <div onclick="rotIdx=${i}; renderizarTodo();"
+             class="cursor-pointer p-2.5 rounded border transition ${i === rotIdx ? 'bg-[#241f1b] text-[#f6f2e8] border-[#c84b31] shadow-md' : 'bg-ivory border panel-border hover:opacity-90 text-main'}">
+          <div class="flex justify-between items-start gap-1 mb-1">
+            <div>
+              ${esRec ? `<span class="inline-block text-[9px] font-bold uppercase bg-[#2d6a4f] text-white px-1.5 py-0.2 rounded mb-0.5">${idiomaActual === 'es' ? '★ Mejor Rotación Sugerida' : '★ Top Suggested Rotation'}</span>` : ''}
+              <div class="font-bold text-[11px]">${nom}</div>
+            </div>
+            <span class="mono text-[10px] font-bold px-1.5 py-0.5 rounded shrink-0 ${i === rotIdx ? 'bg-[#c84b31] text-white' : 'bg-sand text-main border panel-border'}">
+              ${r.score_multicriterio} pts
+            </span>
+          </div>
+
+          <div class="grid grid-cols-3 gap-1 text-[9px] mono my-1 p-1 rounded ${i === rotIdx ? 'bg-black/30 text-stone-200' : 'bg-sand text-main'}">
+            <div><span class="opacity-60 block">MAY–AGO</span><b>${cal.ciclo_1}</b></div>
+            <div><span class="opacity-60 block">SEP–NOV</span><b>${cal.ciclo_2}</b></div>
+            <div><span class="opacity-60 block">DIC–ABR</span><b>${cal.ciclo_3}</b></div>
+          </div>
+
+          <p class="text-[10px] ${i === rotIdx ? 'text-stone-300' : 'text-muted'} mb-1.5 leading-snug">${desc}</p>
+
+          <div class="grid grid-cols-4 gap-1 mono text-[9px] pt-1 border-t ${i === rotIdx ? 'border-stone-700' : 'panel-border'}">
+            <div><span class="opacity-70 block">${idiomaActual === 'es' ? 'RESERVA' : 'RESERVE'}</span><b class="text-sky-400">${r.retencion_taw_mm_m} mm/m</b></div>
+            <div><span class="opacity-70 block">${idiomaActual === 'es' ? 'ÉXITO 25A' : 'SUCCESS'}</span><b class="text-emerald-400">${r.exito_hidrico_pct}%</b></div>
+            <div><span class="opacity-70 block">NITRÓGENO</span><b>${r.balance_n_kg_ha > 0 ? '+' : ''}${r.balance_n_kg_ha} kg</b></div>
+            <div><span class="opacity-70 block">${idiomaActual === 'es' ? 'CONFIANZA' : 'CONFIDENCE'}</span><b class="text-amber-400">${r.confianza || 'Alta'}</b></div>
+          </div>
+        </div>`;
+      }).join("");
+
+      const meses = ["E", "F", "M", "A", "M", "J", "J", "A", "S", "O", "N", "D"];
+      const mesesLargos = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
+      document.getElementById("calendario-meses").innerHTML = meses.map((m, idx) => {
+        const desnudo = rotActiva.meses_desnudo.includes(mesesLargos[idx]);
+        return `<div class="py-1 rounded ${desnudo ? 'bg-[#c84b31] text-white' : 'bg-[#2d6a4f] text-white'}">${m}</div>`;
+      }).join("");
+
+      document.getElementById("txt-validacion").innerText = idiomaActual === "es" ? rotActiva.validacion_es : rotActiva.validacion_en;
+
+      actualizarSuperficieFisica();
+      dibujarGraficas(ser, datos.transecto, rotActiva);
+    }
+
+    function dibujarGraficas(series, transecto, rotActiva) {
+      const seriesRot = series.por_rotacion[rotActiva.id] || series.por_rotacion[datos.rotaciones[0].id];
+      const seriesTrad = series.por_rotacion["rot_tradicional"] || seriesRot;
+      const colorTexto = temaOscuro ? "#9e9488" : "#57534e";
+      const colorGrid = temaOscuro ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.06)";
+
+      const commonScales = {
+        x: { ticks: { color: colorTexto, font: { size: 8, family: "JetBrains Mono" }, maxTicksLimit: 7 }, grid: { display: false } },
+        y: { ticks: { color: colorTexto, font: { size: 8, family: "JetBrains Mono" }, maxTicksLimit: 4 }, grid: { color: colorGrid } }
+      };
+
+      const ctx1 = document.getElementById("chartAgua").getContext("2d");
+      if (chartAguaInst) chartAguaInst.destroy();
+      chartAguaInst = new Chart(ctx1, {
+        type: "bar",
+        data: {
+          labels: series.etiquetas,
+          datasets: [
+            { type: "line", data: seriesRot.retencion_agua_mm, borderColor: "#1d4ed8", borderWidth: 2, pointRadius: 0, tension: 0.25 },
+            { type: "bar", data: series.lluvia_mm, backgroundColor: "rgba(56, 189, 248, 0.70)" }
+          ]
+        },
+        options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: commonScales }
+      });
+
+      const ctx2 = document.getElementById("chartComparativa").getContext("2d");
+      if (chartCompInst) chartCompInst.destroy();
+      chartCompInst = new Chart(ctx2, {
+        type: "line",
+        data: {
+          labels: series.etiquetas,
+          datasets: [
+            { data: seriesTrad.erosion_pct, borderColor: "#c84b31", backgroundColor: "rgba(200, 75, 49, 0.16)", fill: true, borderWidth: 1.8, pointRadius: 0, tension: 0.25 },
+            { data: seriesRot.erosion_pct, borderColor: "#2d6a4f", backgroundColor: "rgba(45, 106, 79, 0.28)", fill: true, borderWidth: 2, pointRadius: 0, tension: 0.25 }
+          ]
+        },
+        options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: commonScales }
+      });
+
+      const ctx3 = document.getElementById("chartPerfil").getContext("2d");
+      if (chartPerfilInst) chartPerfilInst.destroy();
+      chartPerfilInst = new Chart(ctx3, {
+        type: "line",
+        data: {
+          labels: transecto.distancias_km.map(d => `${d}km`),
+          datasets: [{
+            data: transecto.elevaciones_m,
+            borderColor: temaOscuro ? "#d6cec2" : "#44403c",
+            backgroundColor: temaOscuro ? "rgba(214, 206, 194, 0.16)" : "rgba(120, 113, 108, 0.28)",
+            fill: true,
+            borderWidth: 1.8,
+            pointRadius: 0,
+            tension: 0.3
+          }]
+        },
+        options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: commonScales }
+      });
+    }
+  </script>
+</body>
+</html>
